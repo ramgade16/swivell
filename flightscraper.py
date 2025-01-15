@@ -6,14 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, List
 from tenacity import retry, stop_after_attempt, wait_fixed
 from playwright.async_api import async_playwright
-
-@dataclass
-class SearchParameters:
-    departure: str
-    destination: str
-    departure_date: str
-    return_date: Optional[str] = None
-    ticket_type: str = "One way"
+import re
 
 @dataclass
 class FlightData:
@@ -38,29 +31,44 @@ class FlightScraper:
         "emissions_variation": "div.N6PNV",
     }
 
-    def __init__(self):
+
+    def __init__(self, departure_airport, arrival_airport, date):
         self.results_dir = "./results"
         os.makedirs(self.results_dir, exist_ok=True)
+        self.departure_airport = departure_airport
+        self.arrival_airport = arrival_airport
+        self.date = date
 
     @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
-    async def search_flights(self, params: SearchParameters) -> List[FlightData]:
+    async def search_flights(self) -> List[FlightData]:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=False)
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/91.0.4472.124 Safari/537.36"
+                )
             )
             page = await context.new_page()
             print("Navigating to Google Flights...")
             await page.goto("https://www.google.com/flights")
 
-            await self._fill_search_form(page, params)
+            await self._fill_search_form(page)
 
             flights = await self._extract_flight_data(page)
 
+            await context.close()
             await browser.close()
+
             return flights
 
-    async def _fill_search_form(self, page, params: SearchParameters) -> None:
+
+    async def _fill_search_form(self, page) -> None:
+        """
+        Fill out the flight search form on Google Flights. 
+        Takes screenshots before typing/selecting anything.
+        """
         try:
             try:
                 print("Checking for cookie consent popup...")
@@ -73,67 +81,118 @@ class FlightScraper:
             except Exception as e:
                 print(f"Error while handling cookie consent popup: {e}")
 
+            print("Changing Travel Type to One Way")
+            round_trip_button = page.locator("div.VfPpkd-aPP78e").nth(0)
+            await round_trip_button.wait_for(state="visible", timeout=30000)
+            await round_trip_button.click()
+            await asyncio.sleep(1)
+            await page.keyboard.press("ArrowDown")
+            await page.keyboard.press("Enter")
+
+
             print("Filling departure location...")
             from_input = page.locator("input[aria-label='Where from?']").nth(0)
             await from_input.wait_for(state="visible", timeout=30000)
-            await from_input.click()
-            print("Clicked on the departure input field.")
-            await asyncio.sleep(5)
 
-            await from_input.fill("")
+
+            await from_input.click(click_count=3)
+            print("Clicked on the departure input field.")
+            await asyncio.sleep(1)
+
+            await page.keyboard.press("Backspace")
             print("Cleared the departure input field.")
-            await asyncio.sleep(5)
-            await page.keyboard.type(params.departure)
-            print(f"Typed departure airport: {params.departure}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
+
+
+            await page.keyboard.type(self.departure_airport)
+            print(f"Typed departure airport: {self.departure_airport}")
+            await asyncio.sleep(1)
             await page.keyboard.press("Enter")
             print("Confirmed departure input.")
 
             print("Filling destination location...")
-            to_input = page.locator("input[aria-label='Where to?']")
-            print("Checking visibility of 'Where to?' input field...")
-            if not await to_input.nth(1).is_visible():
-                print("'Where to?' input field (nth(1)) is not visible. Falling back to nth(0).")
-                to_input = to_input.nth(0)
 
-            await to_input.wait_for(state="visible", timeout=30000)
-            await to_input.click()
+            await page.keyboard.press("Tab")
             print("Clicked on the destination input field.")
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
 
-            await to_input.fill("")
+
+            await page.keyboard.press("Backspace")
             print("Cleared the destination input field.")
-            await asyncio.sleep(5)
-            await page.keyboard.type(params.destination)
-            print(f"Typed destination airport: {params.destination}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
+
+
+            await page.keyboard.type(self.arrival_airport)
+            print(f"Typed destination airport: {self.arrival_airport}")
+            await asyncio.sleep(1)
             await page.keyboard.press("Enter")
             print("Confirmed destination input.")
+
 
             print("Opening calendar for departure date...")
             departure_input = page.get_by_placeholder("Departure").nth(0)
             await departure_input.wait_for(state="visible", timeout=30000)
             await departure_input.click()
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
+
 
             print("Selecting departure date...")
-            await page.get_by_role("button", name="Tuesday, December 31,").click()
-            await asyncio.sleep(5)
-            print("Selected departure date: Tuesday, December 31,")
+            await page.get_by_role("button", name=self.date).click()
+            await asyncio.sleep(1)
+            print("Selected departure date: Thursday, January 23,")
 
-            if params.return_date:
-                print("Selecting return date...")
-                return_input = page.get_by_placeholder("Return").nth(0)
-                await return_input.wait_for(state="visible", timeout=30000)
-                await return_input.click()
-                await asyncio.sleep(5)
-                await page.get_by_role("button", name="Monday, January 6,").click()
-                await asyncio.sleep(5)
-                print("Selected return date: Monday, January 6,")
 
-            print("Waiting for flight results to load...")
-            await page.wait_for_selector("div[aria-label='Flight options']", timeout=30000)
-            print("Flight results loaded successfully.")
+            await page.keyboard.press("Escape")
+            print("Escaped Calendar")
+
+            print("Searching...")
+            await asyncio.sleep(1)
+            await page.keyboard.press("Tab")
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(1)
+
+            if(self.arrival_airport != "Anywhere"):
+                print("Loading flight results...")
+                top_flights_text = page.get_by_role("heading", name = "Top flights")
+                await top_flights_text.wait_for(state="visible", timeout=30000)
+                close_button = page.get_by_role("button", name = "Close")
+                if await close_button.is_visible():
+                    await close_button.click()
+                stops_button = page.locator('[aria-label="Stops, Not selected"]')
+                await stops_button.wait_for(state="visible", timeout=30000)
+                await stops_button.click()
+                one_stop_button = page.get_by_role("radio", name = "1 stop or fewer")
+                await one_stop_button.wait_for(state="visible", timeout=30000)
+                await one_stop_button.click()
+                await page.keyboard.press("Escape")
+                cheapest_button = page.get_by_role("tab", name=re.compile(r"^Cheapest"))
+                await cheapest_button.wait_for(state="visible", timeout=30000)
+                await cheapest_button.click()
+                await asyncio.sleep(1)
+                print("Flight results loaded successfully.")
+            else:
+                print("Loading first leg possibilities...")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Tab")
+                await page.keyboard.press("Enter")
+                await page.keyboard.press("Enter")
+                nonstop_button = page.get_by_role("radio", name = "Nonstop only")
+                await nonstop_button.wait_for(state="visible", timeout=30000)
+                await nonstop_button.click()
+                await page.keyboard.press("Escape")
+                print("hello")
+
+
+
         except Exception as e:
             print(f"Error in _fill_search_form: {e}")
             raise
@@ -147,7 +206,7 @@ class FlightScraper:
                 if more_button:
                     await more_button.click()
                     print("Loaded more flights...")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(2)
                 else:
                     break
             except Exception as e:
@@ -175,18 +234,17 @@ class FlightScraper:
             return await element.inner_text()
         return ""
 
-    def save_results(self, flights: List[FlightData], params: SearchParameters) -> str:
+    def save_results(self, flights: List[FlightData]) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = (
-            f"flight_results_{params.departure}_{params.destination}_{timestamp}.json"
+            f"flight_results_{self.departure_airport}_{self.arrival_airport}_{timestamp}.json"
         )
 
         output_data = {
             "search_parameters": {
-                "departure": params.departure,
-                "destination": params.destination,
-                "departure_date": params.departure_date,
-                "return_date": params.return_date,
+                "departure": self.departure_airport,
+                "destination": self.arrival_airport,
+                "departure_date": self.date,
                 "search_timestamp": timestamp,
             },
             "flights": [vars(flight) for flight in flights],
@@ -196,26 +254,3 @@ class FlightScraper:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
         return filepath
-
-async def main():
-    scraper = FlightScraper()
-    params = SearchParameters(
-        departure="MIA",
-        destination="SEA",
-        departure_date="2024-12-31",
-        # return_date="2025-01-06",
-        ticket_type="One way",
-    )
-
-    try:
-        flights = await scraper.search_flights(params)
-        if flights:
-            print(f"Successfully found {len(flights)} flights")
-            scraper.save_results(flights, params)
-        else:
-            print("No flights found.")
-    except Exception as e:
-        print(f"Error during flight search: {str(e)}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
