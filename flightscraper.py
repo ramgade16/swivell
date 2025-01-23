@@ -32,13 +32,14 @@ class FlightScraper:
     }
 
 
-    def __init__(self, departure_airport, arrival_airport, date):
+    def __init__(self, departure_airport, arrival_airport, date, protected_baseline):
         self.results_dir = "./results"
         os.makedirs(self.results_dir, exist_ok=True)
         self.departure_airport = departure_airport
         self.arrival_airport = arrival_airport
         self.date = date
-
+        self.protected_baseline = protected_baseline
+    
     @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
     async def search_flights(self) -> List[FlightData]:
         async with async_playwright() as p:
@@ -54,17 +55,40 @@ class FlightScraper:
             print("Navigating to Google Flights...")
             await page.goto("https://www.google.com/flights")
 
-            await self._fill_search_form(page)
+            if(self.arrival_airport != "major_airports"):
+                await self._fill_search_form(page, self.departure_airport, self.arrival_airport, True)
+                flights = await self._extract_flight_data(page)
+                await context.close()
+                await browser.close()
+                return flights
+            else:
+                major_airports = ["ATL", "LAX", "DFW", "DEN", "ORD", "JFK", "MCO", "LAS", "CLT", "MIA", "SEA", "EWR", "SFO", "PHX", "IAH", "BOS", "FLL", "MSP", "LGA", "DTW", "PHL", "SLC", "BWI", "DCA", "SAN", "IAD", "TPA", "BNA", "AUS", "MDW", "HNL", "DAL", "PDX", "STL", "RDU", "HOU", "OGG", "PIT", "MCI", "MSY", "PHL"]
+                for airport in major_airports:
+                    min_first_leg = min_first_leg = float("inf")
+                    min_second_leg = float("inf")
+                    if(airport != self.departure_airport):
+                        await self._fill_search_form(page, self.departure_airport, airport, False)
+                        first_leg_flights = await self._extract_flight_data(page)
+                        for i in range(min(10,len(first_leg_flights))):
+                            min_first_leg = min(min_first_leg, int(first_leg_flights[i].price.replace("$", "")))
+                        
+                        if(min_first_leg < self.protected_baseline and airport != self.arrival_airport):
+                            await self._fill_search_form(page, airport, self.arrival_airport, False)
+                            second_leg_flights = await self._extract_flight_data(page)
 
-            flights = await self._extract_flight_data(page)
+                            for i in range(min(10,len(second_leg_flights))):
+                                min_second_leg = min(min_second_leg, int(second_leg_flights[i].price.replace("$", "")))
+                    
+                    if(self.protected_baseline + 150 < min_first_leg + min_second_leg):
+                        print(min_first_leg + min_second_leg)
+                            
+                            
 
-            await context.close()
-            await browser.close()
-
-            return flights
 
 
-    async def _fill_search_form(self, page) -> None:
+
+
+    async def _fill_search_form(self, page, departure_airport, arrival_airport, protected) -> None:
         """
         Fill out the flight search form on Google Flights. 
         Takes screenshots before typing/selecting anything.
@@ -104,8 +128,8 @@ class FlightScraper:
             await asyncio.sleep(1)
 
 
-            await page.keyboard.type(self.departure_airport)
-            print(f"Typed departure airport: {self.departure_airport}")
+            await page.keyboard.type(departure_airport)
+            print(f"Typed departure airport: {departure_airport}")
             await asyncio.sleep(1)
             await page.keyboard.press("Enter")
             print("Confirmed departure input.")
@@ -122,8 +146,8 @@ class FlightScraper:
             await asyncio.sleep(1)
 
 
-            await page.keyboard.type(self.arrival_airport)
-            print(f"Typed destination airport: {self.arrival_airport}")
+            await page.keyboard.type(arrival_airport)
+            print(f"Typed destination airport: {arrival_airport}")
             await asyncio.sleep(1)
             await page.keyboard.press("Enter")
             print("Confirmed destination input.")
@@ -151,7 +175,7 @@ class FlightScraper:
             await page.keyboard.press("Enter")
             await asyncio.sleep(1)
 
-            if(self.arrival_airport != "Anywhere"):
+            if(self.arrival_airport != "major_airports"):
                 print("Loading flight results...")
                 top_flights_text = page.get_by_role("heading", name = "Top flights")
                 await top_flights_text.wait_for(state="visible", timeout=30000)
